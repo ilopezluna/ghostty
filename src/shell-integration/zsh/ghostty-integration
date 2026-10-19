@@ -279,6 +279,14 @@ _ghostty_deferred_init() {
         fi
     "${functions[_ghostty_zle_line_init]}
 
+    # The editor owns no terminal modes or prompt state. Only install it for
+    # local Linux emacs-mode ZLE; other contexts retain their input bindings.
+    if [[ ,$GHOSTTY_SHELL_FEATURES, == *,command-editor,* &&
+          $OSTYPE == linux* && -z $SSH_CONNECTION && -z $SSH_CLIENT &&
+          -z $SSH_TTY && $(builtin bindkey -lL main) == "bindkey -A emacs main" ]]; then
+        builtin source -- "${${(%):-%x}:A:h}/ghostty-command-editor"
+    fi
+
     # Add Ghostty binary to PATH if the path feature is enabled
     if [[ "$GHOSTTY_SHELL_FEATURES" == *"path"* ]] && [[ -n "$GHOSTTY_BIN_DIR" ]]; then
       if [[ ":$PATH:" != *":$GHOSTTY_BIN_DIR:"* ]]; then

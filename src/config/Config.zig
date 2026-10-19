@@ -2951,6 +2951,11 @@ keybind: Keybinds = .{},
 ///
 /// Available features:
 ///
+///   * `command-editor` - Experimental keyboard selection and multiline editing
+///     in local Linux zsh with the emacs keymap. Disabled by default. Uses ZLE
+///     as the only command buffer; does not provide mouse selection editing.
+///     Shift+Enter inserts a newline; Enter retains normal shell acceptance.
+///
 ///   * `cursor` - Set the cursor to a bar at the prompt.
 ///
 ///   * `sudo` - Set sudo wrapper to preserve terminfo.
@@ -8897,6 +8902,7 @@ pub const ShellIntegration = enum {
 
 /// Shell integration features
 pub const ShellIntegrationFeatures = packed struct {
+    @"command-editor": bool = false,
     cursor: bool = true,
     sudo: bool = false,
     title: bool = true,

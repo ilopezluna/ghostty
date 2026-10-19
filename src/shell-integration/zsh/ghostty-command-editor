@@ -1,0 +1,129 @@
+# vim:ft=zsh
+# Experimental keyboard editor. Sourced by ghostty-integration after user rc
+# files, only for local Linux emacs-mode shells. BUFFER remains owned by ZLE.
+
+_ghostty_editor_motion() {
+    case $1 in
+        beginning-of-buffer) CURSOR=0 ;;
+        end-of-buffer) CURSOR=${#BUFFER} ;;
+        *) builtin zle .$1 ;;
+    esac
+}
+
+_ghostty_editor_select() {
+    builtin emulate -L zsh
+    (( REGION_ACTIVE )) || MARK=$CURSOR
+    _ghostty_editor_motion ${WIDGET#_ghostty_editor_select_}
+    REGION_ACTIVE=1
+}
+
+_ghostty_editor_move() {
+    builtin emulate -L zsh
+    REGION_ACTIVE=0
+    _ghostty_editor_motion ${WIDGET#_ghostty_editor_move_}
+}
+
+_ghostty_editor_replace() {
+    builtin emulate -L zsh
+    if [[ $KEYMAP != ghostty-command-editor && $KEYMAP != main ]]; then
+        builtin zle ._ghostty_editor_saved_$WIDGET -N -- "$@"
+        builtin return
+    fi
+    if (( REGION_ACTIVE && MARK != CURSOR )); then
+        # Delete without changing the kill ring. ZLE offsets are characters,
+        # not terminal cells or UTF-8 byte offsets.
+        builtin local -i first=$(( MARK < CURSOR ? MARK : CURSOR ))
+        builtin local -i last=$(( MARK > CURSOR ? MARK : CURSOR ))
+        BUFFER=${BUFFER[1,first]}${BUFFER[last+1,-1]}
+        CURSOR=$first
+        REGION_ACTIVE=0
+        case $WIDGET in
+            backward-delete-char|delete-char) builtin return ;;
+        esac
+    fi
+    REGION_ACTIVE=0
+    # Preserve user widgets (quoting, paste hooks, etc.), including WIDGET.
+    builtin zle ._ghostty_editor_saved_$WIDGET -N -- "$@"
+}
+
+_ghostty_editor_copy() {
+    builtin emulate -L zsh
+    (( REGION_ACTIVE && MARK != CURSOR )) || builtin return 0
+    builtin zle .copy-region-as-kill
+    REGION_ACTIVE=0
+}
+
+_ghostty_editor_cut() {
+    builtin emulate -L zsh
+    if (( REGION_ACTIVE && MARK != CURSOR )); then
+        builtin zle .kill-region
+        REGION_ACTIVE=0
+    else
+        builtin zle .backward-kill-word
+    fi
+}
+
+_ghostty_editor_newline() {
+    builtin emulate -L zsh
+    # Use the same replacement path as typing, but insert a literal newline.
+    if (( REGION_ACTIVE && MARK != CURSOR )); then
+        builtin local -i first=$(( MARK < CURSOR ? MARK : CURSOR ))
+        builtin local -i last=$(( MARK > CURSOR ? MARK : CURSOR ))
+        BUFFER=${BUFFER[1,first]}${BUFFER[last+1,-1]}
+        CURSOR=$first
+    fi
+    REGION_ACTIVE=0
+    LBUFFER+=$'\n'
+}
+
+_ghostty_editor_install() {
+    builtin emulate -L zsh -o no_aliases
+    builtin local widget key
+    # A private copy leaves the user's emacs map available via bindkey -e.
+    builtin bindkey -N ghostty-command-editor emacs
+    builtin bindkey -A ghostty-command-editor main
+
+    for widget in backward-char forward-char up-line down-line \
+                  backward-word forward-word beginning-of-line end-of-line \
+                  beginning-of-buffer end-of-buffer; do
+        builtin zle -N _ghostty_editor_select_$widget _ghostty_editor_select
+        builtin zle -N _ghostty_editor_move_$widget _ghostty_editor_move
+    done
+    for key widget in \
+        $'\e[1;2D' backward-char $'\e[1;2C' forward-char \
+        $'\e[1;2A' up-line $'\e[1;2B' down-line \
+        $'\e[1;6D' backward-word $'\e[1;6C' forward-word \
+        $'\e[1;2H' beginning-of-line $'\e[1;2F' end-of-line \
+        $'\e[1;6H' beginning-of-buffer $'\e[1;6F' end-of-buffer; do
+        builtin bindkey -M ghostty-command-editor "$key" _ghostty_editor_select_$widget
+    done
+    for key widget in \
+        $'\e[D' backward-char $'\e[C' forward-char \
+        $'\eOD' backward-char $'\eOC' forward-char \
+        $'\e[1;5D' backward-word $'\e[1;5C' forward-word \
+        $'\e[H' beginning-of-line $'\e[F' end-of-line \
+        $'\eOH' beginning-of-line $'\eOF' end-of-line \
+        $'\e[1;5H' beginning-of-buffer $'\e[1;5F' end-of-buffer; do
+        builtin bindkey -M ghostty-command-editor "$key" _ghostty_editor_move_$widget
+    done
+    # Interpose only insertion/deletion widgets; Tab, history, accept-line,
+    # send-break and delete-char-or-list remain ZLE/user widgets.
+    for widget in self-insert bracketed-paste yank backward-delete-char delete-char; do
+        builtin zle -A $widget ._ghostty_editor_saved_$widget
+        builtin zle -N $widget _ghostty_editor_replace
+    done
+    builtin bindkey -M ghostty-command-editor $'\e[3~' delete-char
+    builtin zle -N _ghostty_editor_copy
+    builtin zle -N _ghostty_editor_cut
+    builtin zle -N _ghostty_editor_newline
+    builtin bindkey -M ghostty-command-editor $'\ew' _ghostty_editor_copy
+    builtin bindkey -M ghostty-command-editor '^W' _ghostty_editor_cut
+    builtin bindkey -M ghostty-command-editor $'\e\r' _ghostty_editor_newline
+    # Ghostty already distinguishes Shift+Enter in its legacy encoding. Also
+    # accept CSI u without enabling a protocol that could leak into widgets.
+    builtin bindkey -M ghostty-command-editor $'\e[27;2;13~' _ghostty_editor_newline
+    builtin bindkey -M ghostty-command-editor $'\e[13;2u' _ghostty_editor_newline
+}
+
+_ghostty_editor_install
+builtin unfunction _ghostty_editor_install
