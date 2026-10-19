@@ -233,6 +233,10 @@ pub fn setupFeatures(
 
     if (writer.end > 0) {
         try env.put("GHOSTTY_SHELL_FEATURES", buf[0..writer.end]);
+    } else {
+        // Do not inherit an enabled editor (or other features) when a new
+        // Ghostty instance explicitly disables all shell integration features.
+        _ = env.swapRemove("GHOSTTY_SHELL_FEATURES");
     }
 }
 
@@ -243,7 +247,25 @@ test "setup features" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Test: all features enabled
+    // Test: default features keep the command editor disabled
+    {
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+        try setupFeatures(&env, .{}, true);
+        try testing.expectEqualStrings("cursor:blink,path,title", env.get("GHOSTTY_SHELL_FEATURES").?);
+    }
+
+    // Test: explicitly enable only the command editor
+    {
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+        var features = std.mem.zeroes(config.ShellIntegrationFeatures);
+        features.@"command-editor" = true;
+        try setupFeatures(&env, features, true);
+        try testing.expectEqualStrings("command-editor", env.get("GHOSTTY_SHELL_FEATURES").?);
+    }
+
+    // Test: existing features enabled
     {
         var env = EnvMap.init(alloc);
         defer env.deinit();
@@ -257,6 +279,7 @@ test "setup features" {
         var env = EnvMap.init(alloc);
         defer env.deinit();
 
+        try env.put("GHOSTTY_SHELL_FEATURES", "command-editor");
         try setupFeatures(&env, std.mem.zeroes(config.ShellIntegrationFeatures), true);
         try testing.expect(env.get("GHOSTTY_SHELL_FEATURES") == null);
     }

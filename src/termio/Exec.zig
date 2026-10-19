@@ -756,6 +756,7 @@ const Subprocess = struct {
         _ = env.orderedRemove("VTE_VERSION");
 
         // Setup our shell integration, if we can.
+        var command_editor_shell = false;
         const shell_command: configpkg.Command = shell: {
             const default_shell_command: configpkg.Command =
                 cfg.command orelse .{ .shell = switch (builtin.os.tag) {
@@ -809,8 +810,12 @@ const Subprocess = struct {
                 .{integration.shell},
             );
 
+            command_editor_shell = integration.shell == .zsh;
             break :shell integration.command;
         };
+        if (!command_editor_shell) {
+            _ = env.orderedRemove("GHOSTTY_COMMAND_EDITOR_SOCKET");
+        }
 
         // Add the environment variables that override any others.
         {

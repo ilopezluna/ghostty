@@ -114,3 +114,7 @@ fi
 ```
 
 Shell integration requires Zsh 5.1+.
+
+The optional local Linux GTK command input panel with ZLE integration is documented in
+[zsh/COMMAND_EDITOR.md](zsh/COMMAND_EDITOR.md), including its activation,
+architecture, PTY tests and limits.

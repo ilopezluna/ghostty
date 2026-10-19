@@ -2951,6 +2951,14 @@ keybind: Keybinds = .{},
 ///
 /// Available features:
 ///
+///   * `command-editor` - Experimental GTK command input panel for local Linux
+///     zsh with the emacs keymap. Disabled by default. Provides native text
+///     selection, mouse editing, clipboard and multiline input. Enter transfers
+///     the draft to ZLE for acceptance; Shift+Enter inserts a newline. Tab and
+///     history use explicit transfers to shell widgets. Escape returns the
+///     draft to normal ZLE input; Ctrl+X Ctrl+G reopens the panel. Requires a
+///     new surface and is unavailable in Flatpak, SSH and other runtimes.
+///
 ///   * `cursor` - Set the cursor to a bar at the prompt.
 ///
 ///   * `sudo` - Set sudo wrapper to preserve terminfo.
@@ -8897,6 +8905,7 @@ pub const ShellIntegration = enum {
 
 /// Shell integration features
 pub const ShellIntegrationFeatures = packed struct {
+    @"command-editor": bool = false,
     cursor: bool = true,
     sudo: bool = false,
     title: bool = true,

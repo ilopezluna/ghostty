@@ -1,0 +1,138 @@
+# vim:ft=zsh
+# A local GTK panel owns the draft until an explicit, versioned ZLE transfer.
+# This file is sourced only by ghostty-integration, after user startup files.
+
+# Read a bounded binary frame without line-based paste semantics. The caller's
+# dynamically scoped op, revision, position and text receive the frame.
+_ghostty_panel_read() {
+    builtin emulate -L zsh -o no_multibyte
+    builtin local LC_ALL=C header= part= count= chunk=
+    builtin local -a fields
+    while (( ${#header} < 96 )); do
+        builtin sysread -i $fd -s 1 part || builtin return 1
+        [[ $part == $'\n' ]] && builtin break
+        header+=$part
+    done
+    [[ $part == $'\n' ]] || builtin return 1
+    fields=(${(s: :)header})
+    (( $#fields == 5 )) || builtin return 1
+    [[ $fields[1] == GCE1 && $fields[3] == <-> &&
+       $fields[4] == <-> && $fields[5] == <-> ]] || builtin return 1
+    (( ${#fields[3]} <= 9 && ${#fields[4]} <= 7 && ${#fields[5]} <= 7 )) || builtin return 1
+    op=$fields[2] revision=$fields[3] position=$fields[4]
+    builtin local -i remaining=$fields[5]
+    (( remaining <= 1048576 )) || builtin return 1
+    text=
+    while (( remaining > 0 )); do
+        builtin sysread -i $fd -s $remaining -c count chunk || builtin return 1
+        (( count > 0 )) || builtin return 1
+        text+=$chunk
+        (( remaining -= count ))
+    done
+    builtin return 0
+}
+
+_ghostty_panel_write() {
+    builtin emulate -L zsh -o no_multibyte
+    builtin local LC_ALL=C data=$1 count
+    while [[ -n $data ]]; do
+        builtin syswrite -o $fd -c count -- "$data" || builtin return 1
+        (( count > 0 )) || builtin return 1
+        data=${data[count+1,-1]}
+    done
+}
+
+_ghostty_panel_bytes() {
+    builtin emulate -L zsh -o no_multibyte
+    builtin local data=$BUFFER
+    REPLY=${#data}
+}
+
+_ghostty_panel() {
+    builtin emulate -L zsh
+    [[ $(builtin bindkey -lL main) == "bindkey -A emacs main" ]] || builtin return 0
+    builtin local -i fd=-1
+    builtin local op revision position text original_buffer original_cursor
+    {
+        while true; do
+            # Each connection is one ownership transfer. Close it before any
+            # native widget can launch fzf or another external application.
+            builtin zsocket "$_ghostty_panel_socket" 2>/dev/null || builtin return 0
+            fd=$REPLY
+            original_buffer=$BUFFER original_cursor=$CURSOR
+            builtin local bytes
+            _ghostty_panel_bytes
+            bytes=$REPLY
+            (( bytes <= 1048576 )) || builtin return 0
+            _ghostty_panel_write "GCE1 state 1 $CURSOR $bytes"$'\n'"$BUFFER" || builtin return 0
+            _ghostty_panel_read || builtin return 0
+            # A redraw or asynchronous user hook must never let an old GUI
+            # snapshot overwrite a newer ZLE edit.
+            [[ $BUFFER == $original_buffer && $CURSOR == $original_cursor ]] || builtin return 0
+            (( revision == 1 && position <= ${#text} )) || builtin return 0
+            [[ $op == (accept|terminal|cancel|eof|complete|previous|next) ]] || builtin return 0
+            [[ $op != eof || -z $text ]] || builtin return 0
+            BUFFER=$text CURSOR=$position REGION_ACTIVE=0
+            _ghostty_panel_write $'GCE1 done 1 0 0\n' || builtin return 0
+            # Wait for the GTK side to acknowledge release by closing. This
+            # also ensures the next connection cannot race the previous one.
+            builtin local end
+            if builtin sysread -i $fd -s 1 end; then
+                builtin return 0
+            fi
+            builtin exec {fd}>&-
+            fd=-1
+            case $op in
+                accept) builtin zle .accept-line; builtin return ;;
+                terminal) builtin zle .redisplay; builtin return ;;
+                cancel) builtin zle .send-break; builtin return ;;
+                # EOF is recognized by ZLE's top-level dispatch, not by
+                # invoking delete-char-or-list inside another widget.
+                eof) builtin zle -U $'\C-d'; builtin return ;;
+                complete) builtin zle $_ghostty_panel_complete -w ;;
+                previous) builtin zle $_ghostty_panel_previous -w ;;
+                next) builtin zle $_ghostty_panel_next -w ;;
+            esac
+            builtin zle .redisplay
+        done
+    } always {
+        (( fd < 0 )) || builtin exec {fd}>&-
+    }
+}
+
+_ghostty_panel_line_init() {
+    # Queue a widget after all line-init hooks, rather than editing a buffer
+    # during prompt drawing or interpreting OSC prompt marks as ownership.
+    [[ -S $_ghostty_panel_socket &&
+       $(builtin bindkey -lL main) == "bindkey -A emacs main" ]] || builtin return 0
+    builtin zle -U $'\C-x\C-g'
+}
+
+_ghostty_panel_install() {
+    builtin emulate -L zsh -o no_aliases
+    builtin local -a binding
+    binding=(${(z)$(builtin bindkey $'\C-x\C-g')})
+    # Do not overwrite a user's existing binding for the reopen chord.
+    [[ ${(Q)binding[-1]} == undefined-key ]] || builtin return 0
+    builtin zmodload zsh/net/socket && builtin zmodload zsh/system || builtin return
+    builtin typeset -g _ghostty_panel_socket=$GHOSTTY_COMMAND_EDITOR_SOCKET
+    # Do not advertise the local channel to child shells or SSH commands.
+    builtin unset GHOSTTY_COMMAND_EDITOR_SOCKET
+    binding=(${(z)$(builtin bindkey '^I')})
+    builtin typeset -g _ghostty_panel_complete=${(Q)binding[-1]}
+    (( $+widgets[$_ghostty_panel_complete] )) || _ghostty_panel_complete=.expand-or-complete
+    binding=(${(z)$(builtin bindkey $'\e[A')})
+    builtin typeset -g _ghostty_panel_previous=${(Q)binding[-1]}
+    (( $+widgets[$_ghostty_panel_previous] )) || _ghostty_panel_previous=.up-line-or-history
+    binding=(${(z)$(builtin bindkey $'\e[B')})
+    builtin typeset -g _ghostty_panel_next=${(Q)binding[-1]}
+    (( $+widgets[$_ghostty_panel_next] )) || _ghostty_panel_next=.down-line-or-history
+    builtin zle -N _ghostty_panel
+    builtin bindkey $'\C-x\C-g' _ghostty_panel
+    # Use the integration's existing hook-composition mechanism.
+    (( $+functions[_ghostty_zle_line_init] )) || _ghostty_zle_line_init() { builtin true; }
+    functions[_ghostty_zle_line_init]+=$'\n    _ghostty_panel_line_init'
+}
+
+_ghostty_panel_install
+builtin unfunction _ghostty_panel_install

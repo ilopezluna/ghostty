@@ -41,6 +41,7 @@ const i18n = @import("../../../os/i18n.zig");
 const global = @import("../../../global.zig");
 const gtk_version = @import("../gtk_version.zig");
 const Overrides = @import("Overrides.zig");
+const CommandEditor = @import("../command_editor.zig").Editor;
 const scale_util = @import("../scale.zig");
 const DesktopNotifications = @import("../desktop_notifications.zig");
 
@@ -720,6 +721,8 @@ pub const Surface = extern struct {
         progress_bar_overlay: *gtk.ProgressBar,
         error_page: *adw.StatusPage,
         terminal_page: *gtk.Overlay,
+        command_editor_slot: *gtk.Box,
+        command_editor: ?*CommandEditor = null,
 
         /// The context for this surface (window, tab, or split)
         context: apprt.surface.NewSurfaceContext = .window,
@@ -1226,6 +1229,9 @@ pub const Surface = extern struct {
 
     /// Notify anyone interested that the readonly status has changed.
     pub fn setReadonly(self: *Self, _: apprt.Action.Value(.readonly)) bool {
+        if (self.private().command_editor) |editor| {
+            editor.setReadonly(@intFromBool(self.getReadonly()));
+        }
         self.as(gobject.Object).notifyByPspec(properties.readonly.impl.param_spec);
 
         return true;
@@ -1639,6 +1645,25 @@ pub const Surface = extern struct {
             }
         }
 
+        // Never inherit another surface's local editor channel. A remote shell
+        // can neither request a panel by printing output nor acquire this path.
+        _ = env.orderedRemove("GHOSTTY_COMMAND_EDITOR_SOCKET");
+        const priv = self.private();
+        if (priv.config) |cfg| {
+            if (cfg.get().@"shell-integration-features".@"command-editor" and
+                !internal_os.isFlatpak())
+            {
+                if (priv.command_editor == null) {
+                    priv.command_editor = CommandEditor.create(
+                        priv.command_editor_slot,
+                        priv.render_surface.as(gtk.Widget),
+                    );
+                }
+                if (priv.command_editor) |editor| {
+                    try env.put("GHOSTTY_COMMAND_EDITOR_SOCKET", std.mem.span(editor.socketPath()));
+                }
+            }
+        }
         return env;
     }
 
@@ -1743,6 +1768,9 @@ pub const Surface = extern struct {
     /// our surface.
     pub fn grabFocus(self: *Self) void {
         const priv = self.private();
+        if (priv.command_editor) |editor| {
+            if (editor.grabFocus() != 0) return;
+        }
         _ = priv.render_surface.as(gtk.Widget).grabFocus();
     }
 
@@ -1815,6 +1843,7 @@ pub const Surface = extern struct {
         priv.size = .{ .width = 0, .height = 0 };
         priv.vadj_signal_group = null;
         priv.desktop_notifications = .{};
+        priv.command_editor = null;
 
         // If our configuration is null then we get the configuration
         // from the application.
@@ -1883,6 +1912,11 @@ pub const Surface = extern struct {
         const priv = self.private();
 
         self.clearDesktopNotifications();
+
+        if (priv.command_editor) |editor| {
+            editor.deinit();
+            priv.command_editor = null;
+        }
 
         if (priv.config) |v| {
             v.unref();
@@ -2779,6 +2813,9 @@ pub const Surface = extern struct {
         gtk_mods: gdk.ModifierType,
         self: *Self,
     ) callconv(.c) c_int {
+        if (self.private().command_editor) |editor| {
+            if (editor.forwardKey(ec_key, keyval, gtk_mods) != 0) return 1;
+        }
         return @intFromBool(self.keyEvent(
             .press,
             ec_key,
@@ -2795,6 +2832,9 @@ pub const Surface = extern struct {
         state: gdk.ModifierType,
         self: *Self,
     ) callconv(.c) void {
+        if (self.private().command_editor) |editor| {
+            if (editor.forwardKey(ec_key, keyval, state) != 0) return;
+        }
         _ = self.keyEvent(
             .release,
             ec_key,
@@ -3867,6 +3907,7 @@ pub const Surface = extern struct {
 
             // Bindings
             class.bindTemplateChildPrivate("render_surface", .{});
+            class.bindTemplateChildPrivate("command_editor_slot", .{});
             class.bindTemplateChildPrivate("url_left", .{});
             class.bindTemplateChildPrivate("url_right", .{});
             class.bindTemplateChildPrivate("child_exited_overlay", .{});
