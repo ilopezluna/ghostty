@@ -1,193 +1,217 @@
-# Experimental ZLE command editor
+# Experimental GTK command input panel
 
-This is a **partial keyboard editing prototype**, for local Linux zsh using
-`bindkey -e`. It is not a Warp-style GUI editor. It adds editable keyboard
-selection to the existing ZLE command buffer. No new runtime dependencies are
-required. The default configuration does not enable it.
+This prototype provides a **native graphical command editor**, with its own
+`GtkTextView` below the terminal. It replaces the earlier keyboard-only ZLE
+experiment. It targets local Linux zsh with the emacs keymap, using the existing
+GTK/GLib runtime. It is disabled by default. Full application integration still
+needs a successful Ghostty build; see the validation limits below.
 
 ## Enable
 
-Build/install this checkout and add to Ghostty's configuration:
+Build/install this checkout, then configure:
 
 ```ini
 shell-integration = zsh
 shell-integration-features = command-editor
 ```
 
-Open a new terminal surface. The integration installs after `.zshrc`, at the
-first prompt. It skips installation on other operating systems, in SSH sessions
-(`SSH_CONNECTION`, `SSH_CLIENT`, or `SSH_TTY` set), and when `main` is not an alias
-of the emacs keymap. Other shells ignore this feature. Remove the option or use
-`no-command-editor` and open a new surface to disable it. As with other feature
-flags, `shell-integration-features = true` enables it too.
+Open a new surface. Shell integration installs after `.zshrc` and opens the
+panel when ZLE starts accepting a new command. Remove the flag or use
+`no-command-editor` and open a new surface to disable it. As with other shell
+features, `shell-integration-features = true` enables this feature too.
 
-For development without building Ghostty, run an interactive local Linux zsh,
-use `bindkey -e`, set `GHOSTTY_SHELL_FEATURES=command-editor`, and source
-`src/shell-integration/zsh/ghostty-integration`. This exercises the same ZLE
-implementation but does not validate Ghostty configuration parsing or the GUI.
-Do not source `ghostty-command-editor` directly.
+Installation requires a local channel created by the GTK surface, Linux,
+multibyte ZLE, the emacs keymap, and an unused Ctrl+X Ctrl+G binding. SSH sessions,
+vi/custom main keymaps, Flatpak, other shells and other app runtimes keep normal
+terminal input. Changing the main keymap to vi later stops automatic reopening.
 
-| Input | Behavior |
-| --- | --- |
-| Left / Right | Move and clear command selection |
-| Shift + arrows | Extend command selection (Up / Down move by logical line) |
-| Ctrl + Left / Right | Move by ZLE word |
-| Ctrl + Shift + Left / Right | Extend selection by ZLE word |
-| Home / End | Move to beginning / end of logical line |
-| Ctrl + Home / End | Move to beginning / end of entire buffer |
-| Shift with Home / End or Ctrl + Home / End | Extend selection to that boundary |
-| Type, Backspace, Delete | Replace / remove command selection |
-| Alt + W | Copy command selection to ZLE's kill ring |
-| Ctrl + W | Cut selection to kill ring; otherwise backward-kill-word |
-| Ctrl + Y | Yank kill ring, replacing selection |
-| Terminal paste | Standard bracketed paste, replacing selection |
-| Shift + Enter (also Alt + Enter) | Insert literal newline, replacing selection |
-| Enter | Normal ZLE accept-line, with zsh parsing and continuation prompts |
-| Ctrl + C / Ctrl + D | Normal ZLE cancel / delete-or-list / EOF behavior |
+| Input                                | Behavior                                                             |
+| ------------------------------------ | -------------------------------------------------------------------- |
+| Click / drag / Shift+arrows          | Native editable cursor and selection                                 |
+| Ctrl+arrows, Home/End, Ctrl+Home/End | Native GTK text/word navigation                                      |
+| Ctrl+C / Ctrl+X / Ctrl+V             | System clipboard copy/cut/paste                                      |
+| Ctrl+Shift+C/X/V in the panel        | Also copy/cut/paste the command selection                            |
+| Type / Backspace / Delete / paste    | Native selection replacement                                         |
+| Shift+Enter                          | Insert a newline without executing                                   |
+| Enter                                | Transfer the whole draft to ZLE and accept once                      |
+| Tab                                  | Transfer to the configured completion widget, then reopen its result |
+| Up / Down at first/last logical line | Native ZLE history, then reopen its result                           |
+| Up / Down elsewhere                  | Move within the graphical draft                                      |
+| Ctrl+C with no selection / Ctrl+G    | Cancel through ZLE, without executing                                |
+| Ctrl+D                               | Native text deletion; EOF on an empty draft                          |
+| Esc                                  | Return the draft and cursor to normal ZLE input                      |
+| Ctrl+X Ctrl+G in ZLE                 | Reopen the panel with the current native buffer                      |
 
-Ghostty's existing legacy encoder in `src/input/function_keys.zig` sends
-`ESC [27;2;13~` for Shift+Enter. The editor binds that sequence, as well as
-`CSI 13;2u` and Alt+Enter, without changing terminal keyboard protocols. Enter
-continues to reach the shell's accept-line widget. No global terminal binding
-is added, so other applications retain their existing Enter/Shift+Enter input.
+Ctrl+C with a selection copies it, as in a text editor. Ctrl+G cancels regardless
+of selection. Clicking terminal output still permits scrollback selection;
+Ctrl+Shift+C there copies the terminal selection. Other keys in the terminal
+are forwarded to the active panel instead of accumulating in the blocked PTY.
+The command selection and scrollback selection are separate.
 
 ## Architecture investigation and decision
 
-The relevant existing path is:
+The existing input path is
+`src/apprt/gtk/class/surface.zig` → `src/Surface.zig:keyCallback` →
+`src/input/key_encode.zig` → `src/termio/Exec.zig:queueWrite` → PTY → shell or
+foreground program. The reverse PTY read/parse path feeds `Termio.processOutput`
+and the terminal model for rendering.
 
-1. `src/apprt/gtk/class/surface.zig` translates GTK input and calls the shared
-   `src/Surface.zig:keyCallback`. The shared surface processes bindings, then
-   encodes keys with `src/input/key_encode.zig` and queues terminal IO messages.
-2. `src/termio/Exec.zig:queueWrite` writes those bytes to the PTY. The subprocess
-   owns the PTY slave as stdin/stdout/stderr. The read/parse pipeline feeds
-   output into `Termio.processOutput` and the terminal model for rendering.
-3. `src/termio/shell_integration.zig` injects integration resources and serializes
-   feature flags in `GHOSTTY_SHELL_FEATURES`. `src/config/Config.zig` defines the
-   flags and their defaults. `src/build/GhosttyResources.zig` installs the entire
-   integration directory, including the new script.
-4. `zsh/.zshenv` restores the user's startup environment. `ghostty-integration`
-   defers hooks until after user rc files. It emits OSC 133 prompt/command
-   markers and tracks `_ghostty_state` for those markers, not the input buffer.
-   Its existing prompt code explicitly describes async-theme and hook-order
-   limitations. Prompt redraws are not buffer snapshots.
-5. `src/Surface.zig:maybePromptClick` uses semantic prompt positions and, for
-   the `cl` path used by zsh, sends repeated arrow keys. It cannot tell whether
-   ZLE consumed them as cursor motion, a plugin widget, or something else.
-   `src/input/paste.zig` already frames bracketed paste and sanitizes control
-   bytes. These mechanisms are reused without changing their semantics.
+`src/termio/shell_integration.zig` injects resources and serializes feature
+flags. `zsh/.zshenv` restores user startup state; `ghostty-integration` defers its
+hooks until after user rc files. Its OSC 133 prompt markers describe terminal
+regions, not a reliable snapshot of ZLE's input buffer. The existing
+`src/Surface.zig:maybePromptClick` zsh path sends arrow keys from approximate
+screen positions. `src/input/paste.zig` frames/sanitizes terminal pastes; that is
+not an assignment to `BUFFER` either. Neither mechanism supplies editor ownership
+or acknowledged execution.
 
-Three approaches were considered:
+Three architectures were considered:
 
-- A GUI-owned draft sent back as text would need to reconcile completion,
-  history, ZLE widgets and suggestions. Replaying text through the PTY invokes
-  key bindings and paste hooks; it is not an assignment to `BUFFER`. Clearing a
-  line and replaying it can lose edits, change meaning or accept it twice.
-- A GUI editor synchronized with ZLE could support mouse selection and a
-  platform clipboard, but needs an explicit buffer protocol: shell identity,
-  editing lifecycle, revisions, character offsets, replacement acknowledgments
-  and an accept operation. OSC 133 alone supplies none of these guarantees.
-- Editing inside ZLE uses its authoritative `BUFFER`, `CURSOR`, `MARK` and
-  `REGION_ACTIVE`. Completion/history and shell parsing already operate on that
-  buffer. This is the chosen, smaller prototype.
+- **ZLE-only editing:** preserves native shell operation and can add keyboard
+  selection, but cannot deliver a separate graphical editor. That was the earlier
+  experiment and did not satisfy the intended interaction.
+- **GUI draft replayed into the PTY:** completion, history, bindings and paste
+  hooks can reinterpret replayed text. Prompt detection cannot make this a safe
+  buffer synchronization mechanism. This approach is not used.
+- **GUI draft with explicit local ZLE transfers:** the chosen design. GTK owns
+  editing between transfers. ZLE owns completion, history, acceptance and all
+  native terminal input after a handoff.
 
-`ghostty-command-editor` copies the emacs keymap, adds selection/navigation
-widgets, and interposes insertion/deletion widgets while retaining the original
-widgets. Selection replacement changes `BUFFER` directly, using ZLE character
-offsets rather than terminal columns. Enter is not intercepted and the draft is
-never serialized back to the PTY for execution. There is no duplicate GUI draft
-to synchronize and no retry/second accept operation.
+`src/apprt/gtk/command_editor/editor.c` implements the real GTK widget and a
+nonblocking GLib socket service. A small C ABI in `command_editor.zig` connects
+it to the existing Zig surface. This GTK-only helper introduces no new runtime
+libraries and can be compiled/tested independently while the project's Zig
+build dependencies are unavailable. `src/build/SharedDeps.zig` compiles it with
+the existing GTK dependency. `ui/1.0/surface.blp` reserves a sibling slot below
+the terminal, leaving terminal mouse/controllers on their existing branch.
 
-There is no terminal-side editor activation based on detecting a prompt. The
-widgets run only while ZLE dispatches input. Accepted commands, cancelled lines,
-continuation prompts and the next ZLE session follow zsh's lifecycle. When zsh
-or a ZLE widget runs Vim, less, top or fzf, that program receives the usual PTY
-input. The prototype enables no mouse reporting or keyboard protocol and adds
-no terminal key bindings. Existing OSC 133 hooks remain unchanged.
+The surface creates a private temporary directory (0700) and a Unix socket per
+surface, removes any inherited channel path, and injects its own path as
+`GHOSTTY_COMMAND_EDITOR_SOCKET`. `src/termio/Exec.zig` strips that path when
+automatic integration identifies a different shell or cannot load integration.
+No terminal escape sequence can open the panel
+or select a socket. Incoming connections require same-user credentials. After
+installation zsh unsets the exported path so child shells and SSH commands do
+not inherit it. The socket is a same-user interface, not a security boundary
+against arbitrary processes already running as that user.
 
-## Edge cases and limits
+`ghostty-command-editor` queues its widget after line-init hooks. Each widget
+transaction has one socket connection and this framing:
 
-- **Completion/history:** Tab and history widgets are retained. The PTY tests
-  cover ordinary completion and history. There is no asynchronous synchronization
-  with another draft. Native completion and history selection behavior remains
-  ZLE's, rather than promising desktop-editor replacement semantics for Tab.
-- **ZLE plugins/suggestions:** original insertion, paste and yank widgets are
-  called with their original `WIDGET` name. The new arrow bindings deliberately
-  use native motions; custom arrow bindings such as right-arrow accepting an
-  autosuggestion are superseded in this keymap. Autosuggestion, syntax
-  highlighting, async prompt themes and fzf plugin combinations have not been
-  manually validated. Plugins that replace widgets/keymaps after installation
-  can bypass the prototype. Vi mode and custom main keymaps are not supported.
-- **Cancellation/EOF:** Ctrl+C does not accept a draft. Ctrl+D retains the
-  user's delete-char-or-list behavior, including EOF on empty input; it is not
-  redefined as selection deletion. Enter also retains any custom accept widget.
-- **Incomplete commands:** Enter lets zsh request PS2 for open quotes or other
-  incomplete syntax. This preserves zsh semantics, but editing the entire
-  already-submitted PS1+PS2 command as one draft is not implemented. Build a
-  single multiline draft with Shift+Enter when that is needed.
-- **Paste:** bracketed paste inserts literal newlines without accepting them.
-  Ordinary printable command content and LF are preserved and executed once on
-  acceptance. Ghostty's existing control-byte sanitization still applies; this
-  does not promise binary/NUL command buffers or fidelity for unsafe controls.
-- **Unicode/wrapping/resize:** ZLE owns display width, prompt layout and redraw.
-  Tests compare exact UTF-8 text through narrow resize, including wide characters,
-  emoji and combining characters. Motion uses ZLE character semantics, not a new
-  grapheme-cluster implementation. Visual alignment has not been checked in GTK.
-- **Mouse and clipboard:** command selection is `REGION_ACTIVE`, separate from
-  Ghostty's visible scrollback selection. Mouse drag still selects terminal
-  output; Ctrl+Shift+C copies that terminal selection. It does **not** copy the
-  ZLE region. The existing prompt-click behavior remains approximate and is not
-  promoted to authoritative buffer positioning. Editable mouse drag/Shift-click
-  and system clipboard copy/cut of the ZLE region are not implemented. Paste
-  from the system clipboard uses the terminal's existing bracketed-paste path.
-- **Remote/context fallback:** no new bindings are sent to child applications
-  or remote hosts. Automatic integration is only injected into the spawned
-  shell, and SSH environment checks also reject manual loading remotely. Nested
-  shells and multiplexers are not newly integrated. Contexts without this ZLE
-  integration continue with the usual terminal input.
+```text
+GCE1 operation revision unicode_cursor utf8_bytes\n
+<exactly utf8_bytes bytes, including embedded newlines/trailing spaces>
+```
+
+The shell sends an authoritative `state` snapshot. A single request can return
+`accept`, `complete`, `previous`, `next`, `terminal`, `cancel` or `eof`, together
+with the complete draft and cursor. The revision is scoped to that connection
+(currently one snapshot, revision 1). Closed connections cannot submit to a new
+transaction. ZLE also compares its current buffer/cursor with the original
+snapshot, rejecting the request if an asynchronous hook changed them.
+
+After validation, ZLE assigns `BUFFER`/`CURSOR` directly and acknowledges with
+`done`. GTK closes the connection; ZLE waits for that release and closes its fd
+**before invoking any native widget or external command**. Completion/history
+then open a fresh transaction with their resulting buffer. The GTK editor is
+hidden and terminal focus restored during these operations, so interactive
+widgets can use the terminal normally. Acceptance invokes native `accept-line`
+once. The GUI disables sending while a transfer is pending; no timeout retries
+or command-text replay are used. This is an ownership-transfer model, not
+per-keystroke mirroring of two editable buffers.
+
+## Edge cases and remaining limits
+
+- **Completion/history:** tested with real ZLE completion, history, and a custom
+  completion widget that runs a raw-mode subprocess. Menu completion can remain
+  in the terminal until its widget returns. The configured Tab/arrow widgets
+  are retained when they are ordinary widget bindings; macros fall back to
+  native widgets. Esc gives access to all other native ZLE/plugin shortcuts.
+- **Suggestions/highlighting:** live shell suggestions and shell syntax
+  highlighting are not rendered in the panel. Arbitrary ZLE chords are not
+  interpreted by the GTK editor. Async prompt/suggestion and fzf plugin
+  combinations still need manual validation. Some custom Ghostty shortcuts
+  whose handlers live only on the terminal branch are not available while the
+  panel has keyboard focus; window/application accelerators retain their own
+  dispatch. This prototype does not claim complete shortcut/plugin parity.
+- **Cancellation/EOF:** GUI cancellation calls ZLE's send-break. Ctrl+D on an
+  empty draft queues the normal Ctrl+D action in ZLE's top-level dispatch;
+  directly invoking delete-char-or-list inside another widget is insufficient
+  for EOF. Nonempty Ctrl+D uses GTK's native text deletion.
+- **Incomplete commands:** Enter delegates parsing to zsh. Open quotes and
+  incomplete syntax produce PS2 and another draft. Editing the previously
+  accepted PS1 portion together with PS2 is not implemented. Shift+Enter keeps
+  the entire multiline command in one graphical draft until acceptance.
+- **Paste/execution:** clipboard text goes into `GtkTextBuffer`, never through
+  the PTY. Embedded newlines cannot execute during paste. The accepted UTF-8
+  draft is assigned directly to ZLE and accepted once, with normal shell
+  parsing. Frames are bounded to 1 MiB; binary/NUL buffers are unsupported.
+  If a connection fails during acceptance, execution outcome is unknown and
+  the command is never retried automatically.
+- **Unicode/resize:** GTK owns selection, wrapping, text layout and IME. Cursor
+  positions use Unicode character offsets, matching multibyte ZLE, not display
+  columns or UTF-8 bytes. Tests include wide characters, emoji, combining text,
+  multiline paste and resize. Enter is first offered to the text view's IM
+  context before being treated as acceptance. Complex IMEs still need manual
+  validation. Changing GTK panel height resizes the terminal normally.
+- **Prompt/process transitions:** only explicit local ZLE connections activate
+  the panel. Prompt text/redraws do not activate it. On handoff to Vim, less,
+  top, fzf or another process it is hidden and no editor fd remains open.
+  No terminal mouse or keyboard protocols are changed. The raw-mode subprocess
+  test verifies this path; those individual applications were not manually run
+  inside a complete Ghostty build.
+- **Failures/readonly:** loss of connection leaves the draft visible and
+  read-only for recovery/copy, without automatic resubmission. Reopening a new
+  transaction can replace that recovery view, so copy it first if needed.
+  The surface's readonly action disables editing and acceptance while retaining
+  selection/copy. Normal input remains the fallback if integration cannot load.
 
 ## Validation
 
-Run from the repository root:
+The following commands compile the actual GTK component and exercise it with
+real zsh. The test host is a minimal GTK window containing the production panel;
+it does **not** substitute for verification of the complete Ghostty app.
+Tests use Python's standard library, GTK4 development files, Xvfb, xdotool and
+an X11 xclip executable. The tests deliberately use `/usr/bin/xclip` so a host
+clipboard bridge earlier on PATH cannot replace the isolated X11 clipboard.
 
 ```sh
+cc -Wall -Wextra -Werror \
+  src/apprt/gtk/command_editor/editor.c \
+  src/apprt/gtk/command_editor/panel_harness.c \
+  $(pkg-config --cflags --libs gtk4) -o /tmp/ghostty-panel-harness
 python3 src/shell-integration/zsh/tests/command_editor.py
-zsh -n src/shell-integration/zsh/ghostty-integration
-zsh -n src/shell-integration/zsh/ghostty-command-editor
-zig fmt --check src/config/Config.zig src/termio/shell_integration.zig
+xvfb-run -a env GDK_BACKEND=x11 GSK_RENDERER=cairo GSETTINGS_BACKEND=memory \
+  GHOSTTY_PANEL_HARNESS=/tmp/ghostty-panel-harness \
+  python3 src/shell-integration/zsh/tests/panel.py
+blueprint-compiler compile src/apprt/gtk/ui/1.0/surface.blp \
+  --output /tmp/ghostty-surface-panel.ui
 zig build test -Dtest-filter='setup features'
 ```
 
-The 15-test Python suite uses real zsh 5.9 under a Linux PTY, without a graphical server
-or external Python packages. It checks buffer/selection offsets, replacement,
-kill-ring operations, multiline acceptance exactly once, safe bracketed paste,
-completion/history, quote continuation/cancellation, EOF, Unicode, resize, and
-handoff to a raw-mode subprocess and back. It also checks opt-out, SSH and vi
-fallback and preservation of a user insertion widget. The raw subprocess test
-is not a manual test of Vim, less, top or fzf.
+On Linux ARM64 with zsh 5.9 and GTK 4.22, all 14 protocol/PTY tests and all
+10 native GTK/X11 tests pass. They cover exact text/cursor transfers, fragmented frames, invalid
+revisions, bounded sizes, missing-channel/SSH/vi fallback, Unicode/resize,
+completion/history, subprocess handoff, cancellation, quote continuation, EOF,
+mouse and keyboard selection, system clipboard, multiline acceptance exactly
+once, readonly mode, recovery and forwarding keys from the terminal branch.
+The GTK suite also runs with AddressSanitizer and UndefinedBehaviorSanitizer;
+leak detection is disabled for toolkit allocations. Blueprint compilation,
+shell syntax, Zig/C formatting and whitespace checks pass.
 
-In the implementation environment (Linux ARM64), the PTY tests, shell syntax,
-Zig formatting and `git diff --check` passed. Zig 0.16.0 was obtained for checks,
-but the targeted Zig build could not fetch `translate-c` from Codeberg (HTTP
-403, network approval required). The full project test target and GTK app
-were therefore not compiled or run. As a narrower check, the exact
-`ShellIntegrationFeatures` type, `setupFeatures` function and `setup features`
-test were extracted into a temporary standard-library-only Zig module;
-`zig test` passed that test, including default-off serialization, explicit
-activation and removal of inherited flags when all features are disabled.
-This does not verify the full config parser or the GTK build. No manual
-graphical interaction was performed.
+**Full-build limit:** the project Zig build is still blocked by HTTP 403 while
+fetching `translate-c` from Codeberg (network approval required) and `uucode`
+from GitHub. Consequently the Zig surface adapter, resource assembly and
+complete Ghostty app have not been compiled or run together. The panel and ZLE
+bridge are tested real components, but that integration gap must be closed
+before treating this as a finished Ghostty feature. No manual full-application
+GUI validation has been performed.
 
-## Next experiment
+Next steps are to unblock the full GTK build, verify application shortcuts and
+focus across tabs/splits and clipboard paths in the actual terminal, validate
+real completion/fzf/theme/IME combinations, then add live suggestions and
+highlighting if desired. macOS, other shells and SSH require explicit adapters
+and lifecycle validation rather than relying on prompt markers.
 
-Before building a GUI overlay, add a local, non-forwarded ZLE communication
-channel and a small protocol test: read a versioned `BUFFER`/`CURSOR` snapshot,
-request a replacement only for that revision, and receive an acknowledgment.
-Exercise Tab, history, Ctrl+C, async prompt redraw, fzf and process transitions
-between snapshot and replacement; stale operations must be rejected. Then test
-an acknowledged accept operation that cannot execute twice. Do not use terminal
-screen coordinates as buffer offsets. After that, a GTK editor can supply mouse
-selection, system clipboard and grapheme-aware movement with an
-explicit ownership handoff. Other platforms and shells need separate adapters.
-
-This prototype and its tests/documentation were generated with OpenAI Codex;
-any upstream contribution needs human review and disclosure per `AI_POLICY.md`.
+Implementation, tests and documentation were generated with OpenAI Codex;
+upstream contributions require human review and disclosure per `AI_POLICY.md`.

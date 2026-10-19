@@ -279,13 +279,16 @@ _ghostty_deferred_init() {
         fi
     "${functions[_ghostty_zle_line_init]}
 
-    # The editor owns no terminal modes or prompt state. Only install it for
-    # local Linux emacs-mode ZLE; other contexts retain their input bindings.
+    # A native panel is available only over the local per-surface channel.
+    # Unsupported shells and contexts retain their normal input bindings.
     if [[ ,$GHOSTTY_SHELL_FEATURES, == *,command-editor,* &&
-          $OSTYPE == linux* && -z $SSH_CONNECTION && -z $SSH_CLIENT &&
+          $OSTYPE == linux* && -o multibyte && -S $GHOSTTY_COMMAND_EDITOR_SOCKET &&
+          -z $SSH_CONNECTION && -z $SSH_CLIENT &&
           -z $SSH_TTY && $(builtin bindkey -lL main) == "bindkey -A emacs main" ]]; then
         builtin source -- "${${(%):-%x}:A:h}/ghostty-command-editor"
     fi
+    # Unsupported contexts must not pass this local capability to children.
+    builtin unset GHOSTTY_COMMAND_EDITOR_SOCKET
 
     # Add Ghostty binary to PATH if the path feature is enabled
     if [[ "$GHOSTTY_SHELL_FEATURES" == *"path"* ]] && [[ -n "$GHOSTTY_BIN_DIR" ]]; then

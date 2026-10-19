@@ -17,60 +17,71 @@ Overlay terminal_page {
   focus-on-click: false;
 
   child: Box {
+    orientation: vertical;
     hexpand: true;
     vexpand: true;
 
-    $GhosttyRenderSurface render_surface {
-      realize => $render_surface_realize();
-      unrealize => $render_surface_unrealize();
-      map => $render_surface_map();
-      unmap => $render_surface_unmap();
-      resize => $render_surface_resize();
+    Box {
       hexpand: true;
       vexpand: true;
-      focusable: true;
-      focus-on-click: true;
+
+      $GhosttyRenderSurface render_surface {
+        realize => $render_surface_realize();
+        unrealize => $render_surface_unrealize();
+        map => $render_surface_map();
+        unmap => $render_surface_unmap();
+        resize => $render_surface_resize();
+        hexpand: true;
+        vexpand: true;
+        focusable: true;
+        focus-on-click: true;
+      }
+
+      PopoverMenu context_menu {
+        closed => $context_menu_closed();
+        menu-model: context_menu_model;
+        flags: nested;
+        halign: start;
+        has-arrow: false;
+      }
+
+      EventControllerFocus {
+        enter => $focus_enter();
+        leave => $focus_leave();
+      }
+
+      EventControllerKey {
+        key-pressed => $key_pressed();
+        key-released => $key_released();
+      }
+
+      EventControllerScroll {
+        scroll => $scroll_vertical();
+        scroll-begin => $scroll_vertical_begin();
+        scroll-end => $scroll_vertical_end();
+        flags: vertical;
+      }
+
+      EventControllerScroll {
+        scroll => $scroll_horizontal();
+        flags: horizontal;
+      }
+
+      EventControllerMotion {
+        motion => $mouse_motion();
+        leave => $mouse_leave();
+      }
+
+      GestureClick {
+        pressed => $mouse_down();
+        released => $mouse_up();
+        button: 0;
+      }
     }
 
-    PopoverMenu context_menu {
-      closed => $context_menu_closed();
-      menu-model: context_menu_model;
-      flags: nested;
-      halign: start;
-      has-arrow: false;
-    }
-
-    EventControllerFocus {
-      enter => $focus_enter();
-      leave => $focus_leave();
-    }
-
-    EventControllerKey {
-      key-pressed => $key_pressed();
-      key-released => $key_released();
-    }
-
-    EventControllerScroll {
-      scroll => $scroll_vertical();
-      scroll-begin => $scroll_vertical_begin();
-      scroll-end => $scroll_vertical_end();
-      flags: vertical;
-    }
-
-    EventControllerScroll {
-      scroll => $scroll_horizontal();
-      flags: horizontal;
-    }
-
-    EventControllerMotion {
-      motion => $mouse_motion();
-      leave => $mouse_leave();
-    }
-
-    GestureClick {
-      pressed => $mouse_down();
-      released => $mouse_up();
-      button: 0;
+    Box command_editor_slot {
+      orientation: vertical;
+      visible: false;
     }
   };
 

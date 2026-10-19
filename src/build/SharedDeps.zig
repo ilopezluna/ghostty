@@ -730,6 +730,13 @@ fn addGtk(
         step.root_module.addImport(name, gobject.module(module));
     }
 
+    // The native command panel uses the same GTK/GLib runtime as the app.
+    step.root_module.linkSystemLibrary("gtk4", dynamic_link_opts);
+    step.root_module.addCSourceFile(.{
+        .file = b.path("src/apprt/gtk/command_editor/editor.c"),
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
+    });
+
     // GTK C translation
     try translate_c.addImportToModule(b, "gtk_c", step.root_module, .{
         .source = .{ .includes = .{ .files = &.{.{ .path = "gtk/gtk.h" }} } },
